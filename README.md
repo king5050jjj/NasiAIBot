@@ -38,3 +38,7 @@ python main.py
 Railway start command: `python main.py`
 
 Do not put API keys inside source files or GitHub. Store them only in Railway Variables.
+
+
+## Free video generation
+The video and animation modes use the public `Lightricks/ltx-video-distilled` Hugging Face Space via Gradio Client instead of the OpenAI video API. It is free to use within Hugging Face's ZeroGPU daily quota; it is not unlimited. `FREE_VIDEO_SPACE`, `FREE_VIDEO_SECONDS`, `FREE_VIDEO_HEIGHT`, and `FREE_VIDEO_WIDTH` can be changed in Railway Variables.

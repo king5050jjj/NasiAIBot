@@ -157,34 +157,92 @@ class AIProvider:
             return response.content
 
     async def generate_video(self, prompt: str, image_path: str | None = None) -> bytes:
-        model = settings.video_model or "sora-2"
-        headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
-        data = {"model": model, "prompt": prompt, "seconds": settings.video_seconds, "size": settings.video_size}
-        files = None
-        if image_path:
-            p = Path(image_path)
-            mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
-            files = {"input_reference": (p.name, p.read_bytes(), mime)}
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
-            response = await client.post(f"{self.base_url}/videos", headers=headers, data=data, files=files)
-            if response.is_error:
-                raise RuntimeError(f"OpenAI video error {response.status_code}: {response.text[:1000]}")
-            job = response.json()
-            video_id = job["id"]
-            for _ in range(settings.video_poll_attempts):
-                await __import__("asyncio").sleep(settings.video_poll_seconds)
-                r = await client.get(f"{self.base_url}/videos/{video_id}", headers=headers)
-                if r.is_error:
-                    raise RuntimeError(f"OpenAI video status error {r.status_code}: {r.text[:1000]}")
-                state = r.json()
-                if state.get("status") == "completed":
-                    content = await client.get(f"{self.base_url}/videos/{video_id}/content", headers=headers)
-                    if content.is_error:
-                        raise RuntimeError(f"OpenAI video download error {content.status_code}: {content.text[:1000]}")
-                    return content.content
-                if state.get("status") in {"failed", "cancelled"}:
-                    raise RuntimeError(f"Video generation failed: {state.get('error') or state.get('status')}")
-        raise RuntimeError("Video generation timed out. Increase VIDEO_POLL_ATTEMPTS if needed.")
+        """Generate a short video through a public Hugging Face ZeroGPU Space.
+
+        This path does not use the OpenAI video API or OPENAI_VIDEO_MODEL.
+        The public Space has a free daily ZeroGPU quota; it is not unlimited.
+        """
+        try:
+            from gradio_client import Client, handle_file
+        except ImportError:
+            raise RuntimeError("gradio_client is not installed. Add it to requirements.txt and redeploy Railway.")
+
+        import asyncio
+        import tempfile as _tempfile
+
+        space = os.getenv("FREE_VIDEO_SPACE", "Lightricks/ltx-video-distilled")
+        duration = float(os.getenv("FREE_VIDEO_SECONDS", "2"))
+        # Keep the free ZeroGPU generation lightweight.
+        height = int(os.getenv("FREE_VIDEO_HEIGHT", "512"))
+        width = int(os.getenv("FREE_VIDEO_WIDTH", "704"))
+        negative = os.getenv(
+            "FREE_VIDEO_NEGATIVE_PROMPT",
+            "worst quality, inconsistent motion, blurry, jittery, distorted"
+        )
+
+        if height % 32:
+            height = (height // 32) * 32
+        if width % 32:
+            width = (width // 32) * 32
+        duration = max(0.3, min(duration, 8.5))
+
+        def _run():
+            client = Client(space)
+            mode = "image-to-video" if image_path else "text-to-video"
+            input_image = handle_file(image_path) if image_path else None
+
+            # This is the public API exposed by Lightricks/ltx-video-distilled.
+            result = client.predict(
+                prompt,
+                negative,
+                input_image,
+                None,
+                height,
+                width,
+                mode,
+                duration,
+                9,
+                42,
+                True,
+                3.0,
+                True,
+                api_name="/image_to_video" if image_path else "/text_to_video",
+            )
+            return result
+
+        try:
+            result = await asyncio.to_thread(_run)
+        except Exception as exc:
+            raise RuntimeError(
+                "رایگان‌ساز ویدیو در Hugging Face در دسترس نبود یا سهمیه‌اش تمام شده است: "
+                f"{exc}"
+            ) from exc
+
+        # The Space returns (video_path, seed).
+        video_value = result[0] if isinstance(result, (tuple, list)) else result
+
+        # Gradio may return a plain path/URL or a FileData-like dictionary.
+        if isinstance(video_value, dict):
+            video_value = (
+                video_value.get("path")
+                or video_value.get("url")
+                or video_value.get("name")
+            )
+
+        if not video_value:
+            raise RuntimeError("Hugging Face returned no video file.")
+
+        if isinstance(video_value, str) and video_value.startswith(("http://", "https://")):
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                r = await client.get(video_value)
+                r.raise_for_status()
+                return r.content
+
+        path = Path(str(video_value))
+        if not path.exists():
+            raise RuntimeError(f"Generated video file was not found: {path}")
+
+        return path.read_bytes()
 
     async def generate_animation(self, prompt: str, image_path: str | None = None) -> bytes:
         animation_prompt = f"Create a polished animated sequence. {prompt}"

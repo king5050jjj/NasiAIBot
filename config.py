@@ -19,6 +19,8 @@ class Settings:
     video_provider_key: str = os.getenv("VIDEO_PROVIDER_API_KEY", "")
     animation_provider_key: str = os.getenv("ANIMATION_PROVIDER_API_KEY", "")
     video_model: str = os.getenv("OPENAI_VIDEO_MODEL", "sora-2")
+    free_video_space: str = os.getenv("FREE_VIDEO_SPACE", "Lightricks/ltx-video-distilled")
+    free_video_seconds: str = os.getenv("FREE_VIDEO_SECONDS", "2")
     video_seconds: str = os.getenv("OPENAI_VIDEO_SECONDS", "4")
     video_size: str = os.getenv("OPENAI_VIDEO_SIZE", "720x1280")
     video_poll_seconds: int = int(os.getenv("VIDEO_POLL_SECONDS", "10"))
