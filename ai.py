@@ -157,92 +157,116 @@ class AIProvider:
             return response.content
 
     async def generate_video(self, prompt: str, image_path: str | None = None) -> bytes:
-        """Generate a short video through a public Hugging Face ZeroGPU Space.
+        """Generate a short video through the public LTX ZeroGPU Space.
 
-        This path does not use the OpenAI video API or OPENAI_VIDEO_MODEL.
-        The public Space has a free daily ZeroGPU quota; it is not unlimited.
+        This does not use the OpenAI video API. The Hugging Face Space is public,
+        but its ZeroGPU quota is limited for free users.
         """
         try:
             from gradio_client import Client, handle_file
-        except ImportError:
-            raise RuntimeError("gradio_client is not installed. Add it to requirements.txt and redeploy Railway.")
+        except ImportError as exc:
+            raise RuntimeError(
+                "gradio_client نصب نیست. requirements.txt را بررسی و Railway را دوباره Deploy کن."
+            ) from exc
 
         import asyncio
-        import tempfile as _tempfile
 
         space = os.getenv("FREE_VIDEO_SPACE", "Lightricks/ltx-video-distilled")
         duration = float(os.getenv("FREE_VIDEO_SECONDS", "2"))
-        # Keep the free ZeroGPU generation lightweight.
         height = int(os.getenv("FREE_VIDEO_HEIGHT", "512"))
         width = int(os.getenv("FREE_VIDEO_WIDTH", "704"))
         negative = os.getenv(
             "FREE_VIDEO_NEGATIVE_PROMPT",
-            "worst quality, inconsistent motion, blurry, jittery, distorted"
+            "worst quality, inconsistent motion, blurry, jittery, distorted, deformed"
         )
 
-        if height % 32:
-            height = (height // 32) * 32
-        if width % 32:
-            width = (width // 32) * 32
+        # LTX requires dimensions divisible by 32.
+        height = max(256, min(1280, (height // 32) * 32))
+        width = max(256, min(1280, (width // 32) * 32))
         duration = max(0.3, min(duration, 8.5))
 
         def _run():
-            client = Client(space)
-            mode = "image-to-video" if image_path else "text-to-video"
+            token = os.getenv("HF_TOKEN") or None
+            client = Client(space, hf_token=token)
+
+            api_name = "image_to_video" if image_path else "text_to_video"
             input_image = handle_file(image_path) if image_path else None
 
-            # This is the public API exposed by Lightricks/ltx-video-distilled.
-            result = client.predict(
+            # This matches the CURRENT public API of
+            # Lightricks/ltx-video-distilled:
+            # prompt, negative_prompt, image, video, height, width, mode,
+            # duration, frames_to_use, seed, randomize_seed,
+            # guidance_scale, improve_texture
+            args = [
                 prompt,
                 negative,
                 input_image,
                 None,
                 height,
                 width,
-                mode,
+                "image-to-video" if image_path else "text-to-video",
                 duration,
                 9,
                 42,
                 True,
                 3.0,
                 True,
-                api_name="/image_to_video" if image_path else "/text_to_video",
-            )
-            return result
+            ]
+
+            return client.predict(*args, api_name=api_name)
 
         try:
             result = await asyncio.to_thread(_run)
         except Exception as exc:
             raise RuntimeError(
-                "رایگان‌ساز ویدیو در Hugging Face در دسترس نبود یا سهمیه‌اش تمام شده است: "
-                f"{exc}"
+                "Hugging Face/LTX در دسترس نبود یا سهمیه ZeroGPU تمام شده است. "
+                f"جزئیات: {str(exc)[:1000]}"
             ) from exc
 
-        # The Space returns (video_path, seed).
-        video_value = result[0] if isinstance(result, (tuple, list)) else result
+        # Current Space returns: (output_video_path, used_seed).
+        video_value = result[0] if isinstance(result, (tuple, list)) and result else result
 
-        # Gradio may return a plain path/URL or a FileData-like dictionary.
+        # Gradio can return a FileData dict or a path-like value.
         if isinstance(video_value, dict):
             video_value = (
                 video_value.get("path")
                 or video_value.get("url")
                 or video_value.get("name")
+                or video_value.get("video")
             )
 
+        # Some Gradio versions wrap FileData one level deeper.
+        if isinstance(video_value, (tuple, list)) and video_value:
+            video_value = video_value[0]
+            if isinstance(video_value, dict):
+                video_value = (
+                    video_value.get("path")
+                    or video_value.get("url")
+                    or video_value.get("name")
+                )
+
         if not video_value:
-            raise RuntimeError("Hugging Face returned no video file.")
+            raise RuntimeError(
+                "Hugging Face ویدیویی برنگرداند. "
+                f"پاسخ سرویس: {str(result)[:1200]}"
+            )
 
         if isinstance(video_value, str) and video_value.startswith(("http://", "https://")):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.get(video_value)
-                r.raise_for_status()
-                return r.content
+                response = await client.get(video_value)
+                response.raise_for_status()
+                return response.content
 
         path = Path(str(video_value))
         if not path.exists():
-            raise RuntimeError(f"Generated video file was not found: {path}")
+            raise RuntimeError(
+                f"فایل ویدیوی تولیدشده در Railway پیدا نشد: {path}"
+            )
 
-        return path.read_bytes()
+        data = path.read_bytes()
+        if not data:
+            raise RuntimeError("فایل ویدیوی تولیدشده خالی است.")
+        return data
 
     async def generate_animation(self, prompt: str, image_path: str | None = None) -> bytes:
         animation_prompt = f"Create a polished animated sequence. {prompt}"
